@@ -169,8 +169,9 @@ class CharRNN(nn.Module):
         return probs, out, hs
 
     def predict(self, input, top_k=3):
-        all_probs, _, _ = self(input)
-        return all_probs.topk(top_k)
+        log_probs, _, _ = self(input)
+        probs = torch.exp(log_probs)
+        return probs.topk(top_k)
 
 
 if __name__ == '__main__':
