@@ -1,5 +1,7 @@
 # pycharm cruff
 .idea/
+__pycache__/
 
 # data directory
 Data/
+
