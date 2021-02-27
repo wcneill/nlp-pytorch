@@ -14,9 +14,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 # string constants and stuff
-import string
-ALL_LETTERS = string.ascii_letters + ".,;-'"
-ALL_LETTERS_ARRAY = np.array(list(ALL_LETTERS))
+import constants as cn
 
 
 def train_rnn_classifier(model, epochs, trainloader,
@@ -179,7 +177,7 @@ if __name__ == '__main__':
     dataset = LineDataset('../data/names/*.txt')
     trainloader = DataLoader(dataset, batch_size=1, shuffle=True, num_workers=0)
     n_classes = len(dataset.class_codes)
-    vocab_size = len(ALL_LETTERS)
+    vocab_size = len(cn.ALL_LETTERS)
     print(f"Number of classes: {n_classes}")
     print(f"Vocabulary size: {vocab_size}\n")
 

@@ -5,3 +5,5 @@ __pycache__/
 # data directory
 Data/
 
+# jupyter cruff
+.ipynb_checkpoints/
