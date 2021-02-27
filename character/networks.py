@@ -1,4 +1,3 @@
-
 # Data and such and things
 import copy
 import numpy as np
@@ -13,7 +12,11 @@ from torch.utils.data import DataLoader
 # Progress bar
 from tqdm import tqdm
 
-# string constants and stuff
+# plotting
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.metrics import confusion_matrix
+
 import constants as cn
 
 
@@ -62,6 +65,8 @@ def train_rnn_classifier(model, epochs, trainloader,
     for e in tqdm(range(epochs)):
         tl, vl = train_one_epoch(model, opt, criterion, trainloader, testloader)
 
+        train_loss.append(tl / len(trainloader))
+
         if testloader is not None:
             valid_loss.append(vl / len(testloader))
             if valid_loss[-1] < best_loss:
@@ -87,8 +92,7 @@ def train_one_epoch(model, opt, criterion, trainload, testload):
     running_tl = 0
     running_vl = 0
 
-    hs = None
-
+    model.train()
     for x, y in trainload:
 
         # inference
@@ -105,7 +109,6 @@ def train_one_epoch(model, opt, criterion, trainload, testload):
         # clear gradients
         opt.zero_grad()
 
-
     if testload is not None:
         model.eval()
         with torch.no_grad():
@@ -116,12 +119,6 @@ def train_one_epoch(model, opt, criterion, trainload, testload):
         model.train()
 
     return running_tl, running_vl
-
-
-
-
-
-
 
 
 class CharRNN(nn.Module):
@@ -154,35 +151,77 @@ class CharRNN(nn.Module):
         self.softmax = nn.LogSoftmax(dim=1)
 
     def forward(self, input, hs=None):
-        # print(" -------- In forward ----------")
-        # print(f"Input shape: {input.shape}")
+        """forward prop. Returns softmax of final hidden state, the output of the final layer
+        and the final hidden state."""
         out, hs = self.rnn(input, hs)
-        # print(f"rnn output shape: {out.shape}")
-        # print(f"rnn hidden shape: {hs[-1].shape}")
         probs = self.dense(hs[-1])
-        # print(f"dense layer out {out.shape}")
         probs = self.softmax(probs)
-        # print(f"Softmax out: {(torch.exp(probs).sum(dim=1))}")
 
         return probs, out, hs
 
     def predict(self, input, top_k=3):
+        """Performs inference by returning the top_k most likely classes according to the network."""
         log_probs, _, _ = self(input)
         probs = torch.exp(log_probs)
         return probs.topk(top_k)
 
 
-if __name__ == '__main__':
+def plot_confusion(y_true, y_pred, normalize='pred'):
+    """
+    Plots confusion matrix. Matrix normalized by predicted class counts, so diagonal represent
+    class precision. Pass ``normalize='true'`` to get recall along diagonal.
 
+    :param y_true: True class
+    :param y_pred: Predicted class
+    :return: Confusion matrix ndarray
+    """
+
+    m = confusion_matrix(y_true=y_true, y_pred=y_pred, labels=cn.ORIGIN_CLASSES, normalize=normalize)
+    sns.heatmap(m, vmin=m.max(), vmax=m.min())
+    plt.xticks(range(cn.NUM_CLASSES), labels=cn.ORIGIN_CLASSES, rotation=45)
+    plt.yticks(np.arange(0.5, cn.NUM_CLASSES + 0.5, 1), labels=cn.ORIGIN_CLASSES, rotation=0)
+    plt.show()
+
+    return m
+
+def main():
+
+    # Load the data
     dataset = LineDataset('../data/names/*.txt')
-    trainloader = DataLoader(dataset, batch_size=1, shuffle=True, num_workers=0)
-    n_classes = len(dataset.class_codes)
-    vocab_size = len(cn.ALL_LETTERS)
-    print(f"Number of classes: {n_classes}")
-    print(f"Vocabulary size: {vocab_size}\n")
+    loader = DataLoader(dataset, batch_size=1, shuffle=True, num_workers=0)
 
-    hidden_size = 128
-    model = CharRNN(vocab_size, hidden_size, n_classes)
+    # Train and save the network
+    epochs = 20
+    rnn = CharRNN(57, 128, 18, n_layers=2)
+    loss = train_rnn_classifier(rnn, epochs, loader)
+    torch.save(rnn.state_dict(), '../tasks/saved_models/name_origin.pt')
 
-    train_rnn_classifier(model, 1, trainloader, lr=1e-4)
+    # plot training loss
+    plt.plot(loss[0])
+    plt.show()
+
+    # Generate confusion matrix:
+    true, pred = [], []
+
+    idx_to_label = {i: v for i, v in enumerate(cn.ORIGIN_CLASSES)}
+
+    for X, y in tqdm(dataset):
+        _, idx = rnn.predict(X.float().unsqueeze(0), top_k=1)
+        true.append(idx_to_label[y.item()])
+        pred.append(idx_to_label[idx.item()])
+
+    plot_confusion(true, pred)
+
+    print('Accuracy:')
+    print(sum([1 if t == p else 0 for t, p in zip(true, pred)]) / len(true))
+
+
+if __name__ == '__main__':
+    main()
+
+
+
+
+
+
 
