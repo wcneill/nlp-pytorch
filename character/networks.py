@@ -57,13 +57,12 @@ def train_rnn_classifier(model, epochs, trainloader,
     valid_loss = []
     best_loss = np.inf
     best_model_wts = None
-
     curr_patience = es_patience
 
     opt = optimizer(model.parameters(), lr=lr)
 
     for e in tqdm(range(epochs)):
-        tl, vl = train_one_epoch(model, opt, criterion, trainloader, testloader)
+        tl, vl = _train_one_epoch(model, opt, criterion, trainloader, testloader)
 
         train_loss.append(tl / len(trainloader))
 
@@ -77,17 +76,25 @@ def train_rnn_classifier(model, epochs, trainloader,
                 curr_patience -= 1
 
         if curr_patience == 0:
-            print(f'No improvement in {es_patience} epochs. Interrupting training.')
-            print(f'Best loss: {best_loss}')
-            print(f'Loading best model weights.')
-            model.load_state_dict(best_model_wts)
-            print('Training complete.')
+            _load_best(model, best_loss, best_model_wts)
             break
 
     return train_loss, valid_loss
 
 
-def train_one_epoch(model, opt, criterion, trainload, testload):
+def _load_best(model, best_loss, best_weights):
+    """
+    Helper function for early stopping and loading best weights.
+    """
+    print(f'Early stopping patience reached. Interrupting training.')
+    print(f'Best loss: {best_loss}')
+    print(f'Loading best model weights.')
+    model.load_state_dict(best_weights)
+    print('Training complete.')
+
+
+def _train_one_epoch(model, opt, criterion, trainload, testload):
+    """Train a model for a single epoch"""
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     running_tl = 0
     running_vl = 0
@@ -109,6 +116,7 @@ def train_one_epoch(model, opt, criterion, trainload, testload):
         # clear gradients
         opt.zero_grad()
 
+    # Gather validation error metrics, if available
     if testload is not None:
         model.eval()
         with torch.no_grad():
@@ -139,6 +147,8 @@ class CharRNN(nn.Module):
         :param input_size: The number of variables in the sequence.
         :param hidden_size: The number of variables in the latent space
         :param output_size: Output size of network.
+        :param n_layers: Default 2. Number of RNN layers to stack.
+        :param do: Dropout percent in [0, 1).
 
     """
     def __init__(self, input_size, hidden_size, output_size, n_layers=2, do=0.2):
@@ -150,29 +160,31 @@ class CharRNN(nn.Module):
         self.dense = nn.Linear(hidden_size, output_size)
         self.softmax = nn.LogSoftmax(dim=1)
 
-    def forward(self, input, hs=None):
+    def forward(self, inputs, hs=None):
         """forward prop. Returns softmax of final hidden state, the output of the final layer
         and the final hidden state."""
-        out, hs = self.rnn(input, hs)
+        out, hs = self.rnn(inputs, hs)
         probs = self.dense(hs[-1])
         probs = self.softmax(probs)
 
         return probs, out, hs
 
-    def predict(self, input, top_k=3):
+    def predict(self, inputs, top_k=3):
         """Performs inference by returning the top_k most likely classes according to the network."""
-        log_probs, _, _ = self(input)
+        log_probs, _, _ = self(inputs)
         probs = torch.exp(log_probs)
         return probs.topk(top_k)
 
 
 def plot_confusion(y_true, y_pred, normalize='pred'):
     """
-    Plots confusion matrix. Matrix normalized by predicted class counts, so diagonal represent
+    Create, plot and return a confusion matrix. Matrix normalized by predicted class counts, so diagonal represent
     class precision. Pass ``normalize='true'`` to get recall along diagonal.
 
     :param y_true: True class
-    :param y_pred: Predicted class
+    :param y_pred: Predicted class.
+    :param normalize: One of ['pred', 'true']. Normalize by predicted values (generates precision on diagonal)
+        or normalize by true values (generates recall on the diagonal).
     :return: Confusion matrix ndarray
     """
 
@@ -183,6 +195,7 @@ def plot_confusion(y_true, y_pred, normalize='pred'):
     plt.show()
 
     return m
+
 
 def main():
 
@@ -202,7 +215,6 @@ def main():
 
     # Generate confusion matrix:
     true, pred = [], []
-
     idx_to_label = {i: v for i, v in enumerate(cn.ORIGIN_CLASSES)}
 
     for X, y in tqdm(dataset):
@@ -218,10 +230,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-
-
-
-
-
-
-
