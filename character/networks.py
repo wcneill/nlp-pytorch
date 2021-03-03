@@ -103,7 +103,7 @@ def _train_one_epoch(model, opt, criterion, trainload, testload):
     for x, y in trainload:
 
         # inference
-        x = x.to(device).float()
+        x = x.to(device)#.float()
         y = y.to(device)
         probs, out, hs = model(x)
 
@@ -144,25 +144,28 @@ class CharRNN(nn.Module):
     LSTM output may be used for seq-to-seq, classification or regression tasks.
 
     Parameters:
-        :param input_size: The number of variables in the sequence.
+        :param vocab_size: Length of vocabulary.
+        :param emb_size: Size of latent space
         :param hidden_size: The number of variables in the latent space
         :param output_size: Output size of network.
         :param n_layers: Default 2. Number of RNN layers to stack.
         :param do: Dropout percent in [0, 1).
 
     """
-    def __init__(self, input_size, hidden_size, output_size, n_layers=2, do=0.2):
+    def __init__(self, vocab_size, emb_size, hidden_size, output_size, n_layers=2, do=0.2):
         super().__init__()
 
         self.hidden_size = hidden_size
 
-        self.rnn = nn.RNN(input_size, hidden_size, num_layers=n_layers, batch_first=True, dropout=do)
+        self.emb = nn.Embedding(vocab_size, emb_size)
+        self.rnn = nn.RNN(emb_size, hidden_size, num_layers=n_layers, batch_first=True, dropout=do)
         self.dense = nn.Linear(hidden_size, output_size)
         self.softmax = nn.LogSoftmax(dim=1)
 
     def forward(self, inputs, hs=None):
         """forward prop. Returns softmax of final hidden state, the output of the final layer
         and the final hidden state."""
+        inputs = self.emb(inputs)
         out, hs = self.rnn(inputs, hs)
         probs = self.dense(hs[-1])
         probs = self.softmax(probs)
@@ -174,6 +177,68 @@ class CharRNN(nn.Module):
         log_probs, _, _ = self(inputs)
         probs = torch.exp(log_probs)
         return probs.topk(top_k)
+
+
+class CharGenNet(CharRNN):
+    """
+    An RNN that can be trained to generate text, one character at a time based on an initial classification and
+    starting character.
+
+    Parameters:
+        :param num_classes: The number of classes that generated text can belong to.
+        :param vocab_size: Length of vocabulary.
+        :param emb_size: Size of latent space
+        :param hidden_size: The number of variables in the latent space
+        :param output_size: Output size of network.
+        :param n_layers: Default 2. Number of RNN layers to stack.
+        :param do: Dropout percent in [0, 1).
+
+    """
+
+    def __init__(self, num_classes, vocab_size, emb_size, hidden_size, output_size, **kwargs):
+        super().__init__(vocab_size, emb_size, hidden_size, output_size, **kwargs)
+
+        self.hs_emb = nn.Embedding(num_classes, hidden_size)
+
+    # overrides base class forward.
+    def forward(self, class_idx, first_char, hs=None):
+        """
+        Forward prop. Takes a class index and a starting character, outputs a probability distribution
+        of the character at the next position.
+
+        :param class_idx: The integer index describing the specific class from which to generate text.
+            Should be an integer from [0, C - 1] where ``C`` is the number of unique classes.
+        :param first_char: The starting character.
+
+        """
+
+        hs0_emb = self.hs_emb(class_idx)
+        char_emb = self.emb(first_char)
+        out, hs = self.rnn(char_emb, hs0_emb)
+        out = out.reshape(-1, self.hidden_size)
+
+        return self.softmax(out)
+
+    def sample(self, class_idx, char, top_k=3):
+        """
+        Input a class and starting character, and sample the model's distribution for the next character.
+
+        :param class_idx: Index of the starting class.
+        :param char: Starting character.
+        :param top_k: The sampler will get the ``top_k`` most likely next characters and their probabilities.
+        It will use those probabilities to choose and return one of the ``top_k`` subset. If ``top_k=None``,
+        the sampler will choose a character based on the entire distribution.
+        :return: The vocabulary index of the sampled next character.
+        """
+        probs = self.forward(class_idx, char)
+
+        if top_k is not None:
+            probs, idxs = probs.topk(top_k)
+            choice = np.random.choice(idxs, p=probs)
+        else:
+            choice = np.random.choice(range(len(probs)), p=probs)
+
+        return choice
 
 
 def plot_confusion(y_true, y_pred, normalize='pred'):
@@ -189,7 +254,7 @@ def plot_confusion(y_true, y_pred, normalize='pred'):
     """
 
     m = confusion_matrix(y_true=y_true, y_pred=y_pred, labels=cn.ORIGIN_CLASSES, normalize=normalize)
-    sns.heatmap(m, vmin=m.max(), vmax=m.min())
+    sns.heatmap(m)
     plt.xticks(range(cn.NUM_CLASSES), labels=cn.ORIGIN_CLASSES, rotation=45)
     plt.yticks(np.arange(0.5, cn.NUM_CLASSES + 0.5, 1), labels=cn.ORIGIN_CLASSES, rotation=0)
     plt.show()
@@ -197,7 +262,7 @@ def plot_confusion(y_true, y_pred, normalize='pred'):
     return m
 
 
-def main():
+def main_classify():
 
     # Load the data
     dataset = LineDataset('../data/names/*.txt')
@@ -205,28 +270,44 @@ def main():
 
     # Train and save the network
     epochs = 20
-    rnn = CharRNN(57, 128, 18, n_layers=2)
+    vocab_size = 57
+    emb_size = 30
+    hidden_size = 128
+    output_size = 18
+    rnn = CharRNN(vocab_size, emb_size, hidden_size, output_size, n_layers=2)
     loss = train_rnn_classifier(rnn, epochs, loader)
-    torch.save(rnn.state_dict(), '../tasks/saved_models/name_origin.pt')
+    torch.save(rnn.state_dict(), '../tasks/saved_models/name_origin_wemb.pt')
 
     # plot training loss
     plt.plot(loss[0])
     plt.show()
 
     # Generate confusion matrix:
+    rnn.load_state_dict(torch.load('../tasks/saved_models/name_origin_wemb.pt'))
+
     true, pred = [], []
     idx_to_label = {i: v for i, v in enumerate(cn.ORIGIN_CLASSES)}
 
+    print("Generating Confusion Matrix.")
     for X, y in tqdm(dataset):
-        _, idx = rnn.predict(X.float().unsqueeze(0), top_k=1)
+        _, idx = rnn.predict(X.unsqueeze(0), top_k=1)
         true.append(idx_to_label[y.item()])
         pred.append(idx_to_label[idx.item()])
 
-    plot_confusion(true, pred)
+    m = plot_confusion(true, pred)
 
-    print('Accuracy:')
-    print(sum([1 if t == p else 0 for t, p in zip(true, pred)]) / len(true))
+    print('Accuracy:', end=' ')
+    print("{:.2f}".format(sum([1 if t == p else 0 for t, p in zip(true, pred)]) / len(true)))
+    print(f'Avg Precision: {m.diagonal().mean():.2f}')
 
+def main_gen():
+    epochs = 20
+    num_classes =
+    vocab_size = 57
+    emb_size = 30
+    hidden_size = 128
+
+    rnn = CharGenNet()
 
 if __name__ == '__main__':
-    main()
+    main_classify()
